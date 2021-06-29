@@ -1,6 +1,6 @@
 # KV-Search
 
-> This repository is for "Key-value Storage based Distributed Time Series Similarity Search - NDBC 2021".
+> This repository is for "Key-value Storage based Distributed Time Series Similarity Search" with NDBC 2021 and Journal of Software 2021.
 
 KV-Search is a novel distributed time series similarity search algorithm based on key-value database `HBase`. All code is implemented in `Scala 2.11.7`. To run this code, you need a big data cluster with `Hbase 1.4.9`, `Hadoop 2.7.3` and `Spark 2.3.3`.
 
