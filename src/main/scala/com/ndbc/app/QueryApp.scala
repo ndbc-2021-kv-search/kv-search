@@ -1,19 +1,25 @@
 package com.ndbc.app
 
 import com.ndbc.util.DistanceUtils._
+import com.ndbc.util.HBaseUtils
 import com.ndbc.util.OtherUtils._
 import com.ndbc.util.QueryUtils._
+import org.apache.hadoop.hbase.TableName
+import org.apache.hadoop.hbase.client.Scan
+import org.apache.hadoop.hbase.util.Bytes
 import org.apache.spark.SparkContext
 import org.apache.spark.rdd.RDD
 
+import scala.collection.JavaConverters._
+
 object QueryApp {
   /**
-   * knn query by brute force
+   * spark-scan to brute force
    *
    * @return ([(id, distance)], query time, scan times always equals to one)
    */
-  def bruteForce(spark: SparkContext, path: String,
-                 qsWithIndex: Seq[(Int, Double)], k: Int): (Seq[(Int, Double)], Double, Int) = {
+  def sparkScan(spark: SparkContext, path: String,
+                qsWithIndex: Seq[(Int, Double)], k: Int): (Seq[(Int, Double)], Double, Int) = {
     val tic = System.currentTimeMillis()
     val data = spark.textFile(path)
     val (startTime, endTime) = (qsWithIndex.head._1, qsWithIndex.last._1)
@@ -28,6 +34,32 @@ object QueryApp {
 
     val tok = System.currentTimeMillis()
     (res, (tok - tic) / 1000.0, 1)
+  }
+
+  /**
+   * kv-scan to brute force
+   *
+   * @param hbaseTableName hbase table name
+   * @param querySeq       query sequence
+   * @param k              k
+   * @return ([(id, distance)], query time, scan times always equals to one)
+   */
+  def kvScan(hbaseTableName: String, querySeq: Seq[Double], k: Int): (Seq[(Int, Double)], Double, Int) = {
+    val tic = System.currentTimeMillis()
+    val connect = HBaseUtils.getConnection
+    val hTable = connect.getTable(TableName.valueOf(hbaseTableName))
+    val (family, qualifier1) = (Bytes.toBytes("default"), Bytes.toBytes("t1"))
+
+    val scan = new Scan()
+    val topKRes = hTable.getScanner(scan).asScala
+      .map(r => {
+        val idAndSeq = Bytes.toString(r.getValue(family, qualifier1)).split("#")
+        val (id, seq) = (idAndSeq.head.toInt, idAndSeq.last.split(",").map(_.toDouble))
+        (id, chebyshevDistance(querySeq, seq))
+      }).toSeq
+      .sortBy(_._2).take(k)
+    val tok = System.currentTimeMillis()
+    (topKRes, (tok - tic) / 1000.0, 1)
   }
 
   /**

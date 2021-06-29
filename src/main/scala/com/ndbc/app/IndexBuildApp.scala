@@ -9,6 +9,30 @@ import org.apache.spark.rdd.RDD
 
 object IndexBuildApp {
   /**
+   * store into hbase: id -> seq
+   *
+   * @param rdd            [id, seq]
+   * @param hbaseTableName hbase table name
+   */
+  def buildId2SeqIndex(rdd: RDD[String], hbaseTableName: String): Long = {
+    val family = Bytes.toBytes("default")
+    val qualifier = Bytes.toBytes("t1")
+    val putRdd = rdd.map(record => {
+      val idAndSeq = record.split("\t")
+      val (id, seq) = (idAndSeq.head.toInt, idAndSeq.last)
+      val rowKey = Bytes.toBytes(id)
+      val put = new Put(rowKey)
+      put.addColumn(family, qualifier, Bytes.toBytes(id + "#" + seq))
+    })
+
+    createTableIfNotExists(hbaseTableName, Seq("default"))
+    val jobConf = jobConfig(hbaseTableName)
+    putRdd.map(put => (new ImmutableBytesWritable, put)).saveAsHadoopDataset(jobConf)
+
+    putRdd.count()
+  }
+
+  /**
    * store into hbase: time@max@min@id -> (block, seq)
    *
    * @param rdd            rdd of string

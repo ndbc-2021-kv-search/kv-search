@@ -77,7 +77,7 @@ object Main {
   }
 
   /**
-   * store data into hbase operation
+   * store data into hbase operation with kv-search index
    */
   def indexOp(hdfsPath: String, timeBlockLen: Int, valueBlockLen: Int): Unit = {
     val tic = System.currentTimeMillis()
@@ -97,13 +97,40 @@ object Main {
   }
 
   /**
+   * store data into hbase operation with id index
+   */
+  def indexIdOp(hdfsPath: String): Unit = {
+    val tic = System.currentTimeMillis()
+    val data = spark.textFile(hdfsPath)
+    val hbaseTableName = hdfsPath.split("/").last + "_id"
+    val hbaseRows = buildId2SeqIndex(data, hbaseTableName)
+    val tok = System.currentTimeMillis()
+
+    println(
+      s"""
+         |+++++++
+         |index-id successfully:
+         |params:           [$hdfsPath to $hbaseTableName];
+         |total data count: [${data.count()} to $hbaseRows];
+         |index time:       [${(tok - tic) / 1000.0}s]
+         |+++++++""".stripMargin)
+  }
+
+  /**
    * query one seq operation
    */
   def queryOp(method: String, qs: Seq[(Int, Double)], k: Int, otherParam: String): (Seq[(Int, Double)], Double, Int) = {
     method match {
-      case "brute-force" =>
+      case "spark-scan" =>
         val hdfsPath = otherParam
-        bruteForce(spark, hdfsPath, qs, k)
+        sparkScan(spark, hdfsPath, qs, k)
+
+      case "kv-scan" =>
+        val otherParams = otherParam.split("#")
+        assert(otherParams.length == 1)
+        val hbaseTableName = otherParams.head.split("_").dropRight(2).mkString("_") + "_id"
+        kvScan(hbaseTableName, qs.map(_._2), k)
+
       case "our" =>
         val otherParams = otherParam.split("#")
         assert(otherParams.length == 3)
@@ -134,7 +161,7 @@ object Main {
     val sampleQs = sample(hdfsPath, expTimes)
 
     val res = sampleQs.par.map(qs =>
-      (queryOp("brute-force", qs, k, hdfsPath),
+      (queryOp("spark-scan", qs, k, hdfsPath),
         queryOp("our", qs, k, hbaseTableName + s"#true#${hdfsPath}_${sampleNum}_SAMPLE_BLOCK"),
         queryOp("our", qs, k, hbaseTableName + s"#false#${hdfsPath}_${sampleNum}_SAMPLE_BLOCK"))
     )
@@ -151,7 +178,7 @@ object Main {
            |+++++++
            |sample ${i + 1}:
            |params:                         [hdfsPath=$hdfsPath, hbaseTableName=$hbaseTableName, k=$k];
-           |brute-force top-k:              [${bfRes.length}, $bfScan, [${printRes(bfRes)}], ${bfTime}s];
+           |spark-scan top-k:               [${bfRes.length}, $bfScan, [${printRes(bfRes)}], ${bfTime}s];
            |our with block filter top-k:    [${our1Res.length}, $our1Scan, [${printRes(our1Res)}], ${our1Time}s];
            |our without block filter top-k: [${our2Res.length}, $our2Scan, [${printRes(our2Res)}], ${our2Time}s]
            |+++++++""".stripMargin)
@@ -177,7 +204,7 @@ object Main {
     val diffKRes = ks.par.map(k => {
       val sampleRes = sampleQs.par.map(qs =>
         (
-          queryOp("brute-force", qs, k, hdfsPath)._2,
+          queryOp("spark-scan", qs, k, hdfsPath)._2,
           queryOp("our", qs, k, hbaseTableName + s"#true#${hdfsPath}_${sampleNum}_SAMPLE_BLOCK")._2,
           queryOp("our", qs, k, hbaseTableName + s"#false#${hdfsPath}_${sampleNum}_SAMPLE_BLOCK")._2
         )
@@ -195,7 +222,7 @@ object Main {
            |+++++++
            |params:                                  [hdfsPath=$hdfsPath, hbaseTableName=$hbaseTableName, k=$k, exp times=$expTimes];
            |k:                                       [$k];
-           |brute-force avg query time:              [${bfAvgQueryTime}s];
+           |spark-scan avg query time:              [${bfAvgQueryTime}s];
            |our with block filter avg query time:    [${our1AvgQueryTime}s];
            |our without block filter avg query time: [${our2AvgQueryTime}s]
            |+++++++""".stripMargin)
@@ -300,7 +327,7 @@ object Main {
         val sampleQs = dimAndQs._2
         val sampleResInFixedK = sampleQs.par.map(qs =>
           (
-            queryOp("brute-force", qs, k, hdfsPath)._2,
+            queryOp("spark-scan", qs, k, hdfsPath)._2,
             queryOp("our", qs, k, hbaseTableName + s"#true#${hdfsPath}_${sampleNum}_SAMPLE_BLOCK")._2,
             queryOp("our", qs, k, hbaseTableName + s"#false#${hdfsPath}_${sampleNum}_SAMPLE_BLOCK")._2
           ))
@@ -317,7 +344,7 @@ object Main {
            |+++++++
            |params:                                  [hdfsPath=$hdfsPath, hbaseTableName=$hbaseTableName, k=$k, exp times=$expTimes];
            |dim:                                     [$dim];
-           |brute-force avg query time:              [${bfAvgQueryTime}s];
+           |spark-scan avg query time:               [${bfAvgQueryTime}s];
            |our with block filter avg query time:    [${our1AvgQueryTime}s];
            |our without block filter avg query time: [${our2AvgQueryTime}s]
            |+++++++""".stripMargin)
@@ -409,6 +436,91 @@ object Main {
          |""".stripMargin)
   }
 
+  /**
+   * different tp experiment operation
+   */
+  def diffTpOp(hdfsPath: String, hbaseTableNamePrefix: String, sampleNum: Int, expTimes: Int, tps: Seq[Int]): Unit = {
+    val tic = System.currentTimeMillis()
+    val sampleQs = sample(hdfsPath, expTimes)
+
+    val diffTpRes = tps.par.map(tp => {
+      val hbaseTableName = hbaseTableNamePrefix + "_" + tp + "_100"
+      val sampleRes = sampleQs.par.map(qs =>
+        (
+          queryOp("our", qs, 91, hbaseTableName + s"#true#${hdfsPath}_${sampleNum}_SAMPLE_BLOCK")._2,
+          queryOp("our", qs, 91, hbaseTableName + s"#false#${hdfsPath}_${sampleNum}_SAMPLE_BLOCK")._2
+        )
+      )
+      val our1AvgQueryTime = sampleRes.map(_._1).sum / sampleRes.length
+      val our2AvgQueryTime = sampleRes.map(_._2).sum / sampleRes.length
+      (tp, our1AvgQueryTime, our2AvgQueryTime)
+    }).toList.sortBy(_._1)
+
+    for (r <- diffTpRes) {
+      val (tp, our1AvgQueryTime, our2AvgQueryTime) = r
+      println(
+        s"""
+           |+++++++
+           |params:                                  [hdfsPath=$hdfsPath, hbaseTableNamePrefix=$hbaseTableNamePrefix, k=91, exp times=$expTimes];
+           |tp:                                      [$tp];
+           |our with block filter avg query time:    [${our1AvgQueryTime}s];
+           |our without block filter avg query time: [${our2AvgQueryTime}s]
+           |+++++++""".stripMargin)
+    }
+
+    val tok = System.currentTimeMillis()
+    println(
+      s"""
+         |+++++++
+         |diff tp:
+         |tp:            [${tps.mkString(", ")}];
+         |running time:  [${(tok - tic) / 1000.0}s]
+         |+++++++
+         |""".stripMargin)
+  }
+
+  /**
+   * different tp2 to experiment operation
+   */
+  def diffTp2Op(hdfsPath: String, hbaseTableNamePrefix: String, sampleNum: Int, expTimes: Int, tp2s: Seq[Int]): Unit = {
+    val tic = System.currentTimeMillis()
+    val sampleQs = sample(hdfsPath, expTimes)
+
+    val diffTpRes = tp2s.par.map(tp2 => {
+      val hbaseTableName = hbaseTableNamePrefix + "_1000" + "_" + tp2
+      val sampleRes = sampleQs.par.map(qs =>
+        (
+          queryOp("our", qs, 91, hbaseTableName + s"#true#${hdfsPath}_${sampleNum}_SAMPLE_BLOCK")._2,
+          queryOp("our", qs, 91, hbaseTableName + s"#false#${hdfsPath}_${sampleNum}_SAMPLE_BLOCK")._2
+        )
+      )
+      val our1AvgQueryTime = sampleRes.map(_._1).sum / sampleRes.length
+      val our2AvgQueryTime = sampleRes.map(_._2).sum / sampleRes.length
+      (tp2, our1AvgQueryTime, our2AvgQueryTime)
+    }).toList.sortBy(_._1)
+
+    for (r <- diffTpRes) {
+      val (tp2, our1AvgQueryTime, our2AvgQueryTime) = r
+      println(
+        s"""
+           |+++++++
+           |params:                                  [hdfsPath=$hdfsPath, hbaseTableNamePrefix=$hbaseTableNamePrefix, k=91, exp times=$expTimes];
+           |tp2:                                     [$tp2];
+           |our with block filter avg query time:    [${our1AvgQueryTime}s];
+           |our without block filter avg query time: [${our2AvgQueryTime}s]
+           |+++++++""".stripMargin)
+    }
+
+    val tok = System.currentTimeMillis()
+    println(
+      s"""
+         |+++++++
+         |diff tp:
+         |tp:            [${tp2s.mkString(", ")}];
+         |running time:  [${(tok - tic) / 1000.0}s]
+         |+++++++
+         |""".stripMargin)
+  }
 
   def main(args: Array[String]): Unit = {
     val op = args(0).toLowerCase
@@ -440,6 +552,11 @@ object Main {
             case List(_, a, b, c) => (a, b.toInt, c.toInt)
           }
         indexOp(hdfsPath, timeBlockLen, valueBlockLen)
+
+      case "index-id" =>
+        assert(args.length == 2)
+        val hdfsPath = args(1)
+        indexIdOp(hdfsPath)
 
       case "sample-block" =>
         assert(args.length == 3)
@@ -511,6 +628,22 @@ object Main {
             case List(_, a, b, c, d, e) => (a, b, c.toInt, d.toInt, e.split(",").map(_.toInt))
           }
         diffSampleNum(hdfsPath, hbaseTableName, k, expTimes, sampleNums)
+
+      case "diff-tp" =>
+        assert(args.length == 6)
+        val (hdfsPath, hbaseTableNamePrefix, sampleNum, expTimes, tps) =
+          args.toList match {
+            case List(_, a, b, c, d, e) => (a, b, c.toInt, d.toInt, e.split(",").map(_.toInt))
+          }
+        diffTpOp(hdfsPath, hbaseTableNamePrefix, sampleNum, expTimes, tps)
+
+      case "diff-tp2" =>
+        assert(args.length == 6)
+        val (hdfsPath, hbaseTableNamePrefix, sampleNum, expTimes, tp2s) =
+          args.toList match {
+            case List(_, a, b, c, d, e) => (a, b, c.toInt, d.toInt, e.split(",").map(_.toInt))
+          }
+        diffTp2Op(hdfsPath, hbaseTableNamePrefix, sampleNum, expTimes, tp2s)
 
       case "spark-block-filter" =>
         val (hdfsPath, sampleBlockHdfsPath, k, sampleNum, expTimes) =

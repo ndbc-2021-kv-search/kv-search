@@ -22,14 +22,26 @@ spark-submit \
 --class com.ndbc.Main fake hdfsPath sizeMultiple dimMultiple
 ```
 
-+ Index: store data into HBase
++ Index: store data into HBase with kv-search index
 
 ```shell
 spark-submit \
 --class com.ndbc.Main hdfsPath timeBlockLen valueBlockLen
 ```
 
++ Index Id: store data into HBase with id index
+
+```shell
+spark-submit \
+--class com.ndbc.Main hdfsPath
+```
+
 + Sample Block: Sample blocks to calculate delta
+
+```shell
+spark-submit \
+--class com.ndbc.Main hdfsPath timeBlockLen valueBlockLen
+```
 
 ```shell
 spark-submit \
@@ -71,7 +83,26 @@ spark-submit \
 --class com.ndbc.Main diff-sample hdfsPath hbaseTableName k expTimes sampleNums
 ```
 
++ Different Tp: experiment of different cycle time
+
+```shell
+spark-submit \
+--class com.ndbc.Main diff-tp hdfsPath hbaseTableNamePrefix sampleNums expTimes tps
+```
+
++ Different T'p: experiment of different cycle time of time block
+
+```shell
+spark-submit \
+--class com.ndbc.Main diff-tp hdfsPath hbaseTableNamePrefix sampleNums expTimes tp2s
+```
+
 + Spark Block Filter Or Not: experiment on whether to turn on block filtering
+
+```shell
+spark-submit \
+--class com.ndbc.Main diff-sample hdfsPath hbaseTableName k expTimes sampleNums
+```
 
 ```shell
 spark-submit \
